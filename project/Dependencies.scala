@@ -2,7 +2,7 @@ import sbt._
 
 object Dependencies {
 
-  val scalatest   = "org.scalatest"     %% "scalatest" % "3.2.6"
+  val scalatest   = "org.scalatest"     %% "scalatest" % "3.2.7"
   val machinist   = "org.typelevel"     %% "machinist" % "0.6.8"
   val `slf4j-api` = "org.slf4j"          % "slf4j-api" % "1.7.30"
 
@@ -14,7 +14,7 @@ object Dependencies {
     val kernel = "org.typelevel" %% "cats-kernel" % version
     val macros = "org.typelevel" %% "cats-macros" % version
 
-    private val effectVersion = "3.0.1"
+    private val effectVersion = "3.0.2"
     val effect     = "org.typelevel" %% "cats-effect"        % effectVersion
     val effectLaws = "org.typelevel" %% "cats-effect-testkit" % effectVersion
   }

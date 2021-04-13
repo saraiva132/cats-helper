@@ -1,8 +1,7 @@
 package com.evolutiongaming.catshelper.testkit
 
-import cats.effect.IO
+import cats.effect.{IO, LiftIO}
 import cats.effect.kernel.Async
-
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 
@@ -65,7 +64,7 @@ sealed trait PureTest { self =>
   /**
    * A follow-up to [[apply `PureTest[F]`]].
    */
-  final class PartialApply[F[_]: Async: UnliftIO] {
+  final class PartialApply[F[_]: Async: LiftIO : UnLiftIO] {
     /**
      * Builds and runs the test with previously defined settings.
      */
@@ -77,7 +76,7 @@ sealed trait PureTest { self =>
    *
    * @see [[ioTest `ioTest`]] – a shortcut for `IO`-based tests.
    */
-  final def apply[F[_]: Async: UnliftIO]: PartialApply[F] = new PartialApply[F]
+  final def apply[F[_]: Async: LiftIO : UnLiftIO]: PartialApply[F] = new PartialApply[F]
 
   /**
    * A shorter version of [[PartialApply.of `PureTest[IO].of`]].
