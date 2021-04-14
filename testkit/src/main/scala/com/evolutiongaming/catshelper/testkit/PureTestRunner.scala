@@ -4,7 +4,7 @@ import cats.effect.syntax.all._
 import cats.effect.testkit.{TestContext, TestInstances}
 import cats.effect.{Async, IO, LiftIO, Sync, Temporal}
 import cats.syntax.all._
-import scala.concurrent.{Await, ExecutionContext}
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
 import cats.effect.std.Dispatcher
 
@@ -31,17 +31,20 @@ private[testkit] object PureTestRunner {
 
   private def wrap[F[_] : Async : LiftIO : UnLiftIO, A](env: EnvImpl[F], body: F[A], config: PureTest.Config): IO[A] = {
 
-    val testRun = Dispatcher[F].use { dispatcher =>
+    val wrappedTestRun = Dispatcher[F].use { dispatcher =>
 
       @volatile var outcome: Option[Either[Throwable, A]] = None
 
-      val cancelToken = dispatcher.unsafeRunCancelable {
-        body.evalOn(env.testContext).attempt flatMap { r =>
-          Sync[F].delay {
-            outcome = Some(r)
-          }
-        }
-      }
+      val testBody : F[Unit] =  body
+              .evalOn(env.testContext)
+              .attempt
+              .flatMap { r =>
+                Sync[F].delay {
+                  outcome = Some(r)
+                }
+              }
+
+      val cancelToken = dispatcher.unsafeRunCancelable(testBody)
 
       val testThread = Thread.currentThread()
 
@@ -49,13 +52,11 @@ private[testkit] object PureTestRunner {
         val err = new IllegalStateException("Still running")
         err.setStackTrace(testThread.getStackTrace)
         outcome = Some(Left(err))
-        Await.result(cancelToken(), Duration.Inf)
+        cancelToken()
       }
 
-      val hotLoopGuard = Temporal[F].sleep(config.hotLoopTimeout)
-
-      val timeoutCancel = dispatcher.unsafeRunCancelable {
-        hotLoopGuard *> stopHotLoop
+      val timeoutCancelToken = dispatcher.unsafeRunCancelable {
+        (Temporal[F].sleep(config.hotLoopTimeout) *> stopHotLoop).evalOn(config.backgroundEc)
       }
 
       while (outcome.isEmpty && env.testContext.state.tasks.nonEmpty) {
@@ -63,12 +64,12 @@ private[testkit] object PureTestRunner {
         env.testContext.tick(step)
       }
 
-      Await.result(timeoutCancel(), Duration.Inf)
+      timeoutCancelToken()
 
       LiftIO[F].liftIO(config.testFrameworkApi.completeWith(outcome, env.testContext.state))
     }
 
-    UnLiftIO[F].unLiftIO(testRun)
+    UnLiftIO[F].unLiftIO(wrappedTestRun)
   }
 
   private class EnvImpl[F[_] : Async] extends PureTest.Env[F] with TestInstances {

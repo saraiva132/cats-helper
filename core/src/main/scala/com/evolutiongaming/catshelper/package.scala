@@ -32,8 +32,10 @@ package object catshelper {
 
   object BracketThrowable {
 
+    @deprecated("use cats.effect.MonadCancelThrow", "3.0.0")
     def apply[F[_]](implicit F: BracketThrowable[F]): BracketThrowable[F] = F
 
+    @deprecated("use cats.effect.MonadCancelThrow", "3.0.0")
     def summon[F[_]](implicit F: BracketThrowable[F]): BracketThrowable[F] = F
   }
 }
