@@ -4,20 +4,20 @@ import cats.effect.syntax.all._
 import cats.effect.testkit.{TestContext, TestInstances}
 import cats.effect.{Async, IO, LiftIO, Sync, Temporal}
 import cats.syntax.all._
-import scala.concurrent.ExecutionContext
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
 import cats.effect.std.Dispatcher
 
 private[testkit] object PureTestRunner {
   type TestBody[F[A], A] = PureTest.Env[F] => F[A]
 
-  def doRunTest[F[_] : Async : LiftIO : UnLiftIO , A](body: TestBody[F, A], config: PureTest.Config) : A = {
+  def doRunTest[F[_] : Async : LiftIO : UnLiftIO, A](body: TestBody[F, A], config: PureTest.Config): A = {
     val env = new EnvImpl[F]
     val singleRun = wrap(env, body(env), config)
 
     val fullTestIO = config.flakinessCheckIterations match {
-      case n if n > 0 => singleRun.replicateA(n).map(_.head)
-      case _          => singleRun
+      case n if n > 1 => singleRun.replicateA(n).map(_.head)
+      case _ => singleRun
     }
 
     env
@@ -29,27 +29,28 @@ private[testkit] object PureTestRunner {
             )
   }
 
-  private def wrap[F[_] : Async : LiftIO : UnLiftIO, A](env : EnvImpl[F], body: F[A], config: PureTest.Config): IO[A] = {
+  private def wrap[F[_] : Async : LiftIO : UnLiftIO, A](env: EnvImpl[F], body: F[A], config: PureTest.Config): IO[A] = {
 
     val testRun = Dispatcher[F].use { dispatcher =>
 
+      @volatile var outcome: Option[Either[Throwable, A]] = None
+
+      val cancelToken = dispatcher.unsafeRunCancelable {
+        body.evalOn(env.testContext).attempt flatMap { r =>
+          Sync[F].delay {
+            outcome = Some(r)
+          }
+        }
+      }
+
       val testThread = Thread.currentThread()
 
-    @volatile var outcome: Option[Either[Throwable, A]] = None
-
-    val cancelToken = dispatcher.unsafeRunCancelable {
-      body.evalOn(env.testContext).attempt flatMap { r =>
-      Sync[F].delay { outcome = Some(r) }
-     }
-    }
-
-    val stopHotLoop = Sync[F].delay {
-           val err = new IllegalStateException("Still running")
-           err.setStackTrace(testThread.getStackTrace)
-           outcome = Some(Left(err))
-           cancelToken()
-    }
-
+      val stopHotLoop = Sync[F].delay {
+        val err = new IllegalStateException("Still running")
+        err.setStackTrace(testThread.getStackTrace)
+        outcome = Some(Left(err))
+        Await.result(cancelToken(), Duration.Inf)
+      }
 
       val hotLoopGuard = Temporal[F].sleep(config.hotLoopTimeout)
 
@@ -57,15 +58,15 @@ private[testkit] object PureTestRunner {
         hotLoopGuard *> stopHotLoop
       }
 
-    while (outcome.isEmpty && env.testContext.state.tasks.nonEmpty) {
-      val step = env.testContext.state.tasks.iterator.map(_.runsAt).min
-      env.testContext.tick(step)
+      while (outcome.isEmpty && env.testContext.state.tasks.nonEmpty) {
+        val step = env.testContext.state.tasks.iterator.map(_.runsAt).min
+        env.testContext.tick(step)
+      }
+
+      Await.result(timeoutCancel(), Duration.Inf)
+
+      LiftIO[F].liftIO(config.testFrameworkApi.completeWith(outcome, env.testContext.state))
     }
-
-      timeoutCancel()
-
-    LiftIO[F].liftIO(config.testFrameworkApi.completeWith(outcome, env.testContext.state))
-  }
 
     UnLiftIO[F].unLiftIO(testRun)
   }
@@ -85,7 +86,8 @@ private[testkit] object PureTestRunner {
       def sleepUntil(dt: FiniteDuration): F[Unit] =
         getTimeSinceStart.flatMap(t => Temporal[F].sleep(dt - t).whenA(dt > t))
     }
-}
+  }
+
 }
 
 

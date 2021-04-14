@@ -12,7 +12,7 @@ private[testkit] object UnLiftIO {
   def apply[F[_]](implicit F: UnLiftIO[F]): UnLiftIO[F] = F
 
   implicit val ioUnliftIO: UnLiftIO[IO] = new UnLiftIO[IO] {
-    def unLiftIO[A](fa: IO[A]) = fa
+    def unLiftIO[A](fa: IO[A]) : IO[A] = fa
   }
 
 }
