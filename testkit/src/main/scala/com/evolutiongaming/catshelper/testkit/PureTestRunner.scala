@@ -2,16 +2,15 @@ package com.evolutiongaming.catshelper.testkit
 
 import cats.effect.syntax.all._
 import cats.effect.testkit.{TestContext, TestInstances}
-import cats.effect.{Async, IO, LiftIO, Sync, Temporal}
+import cats.effect.{Async, IO, Sync, Temporal}
 import cats.syntax.all._
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
-import cats.effect.std.Dispatcher
 
 private[testkit] object PureTestRunner {
   type TestBody[F[A], A] = PureTest.Env[F] => F[A]
 
-  def doRunTest[F[_] : Async : LiftIO : UnLiftIO, A](body: TestBody[F, A], config: PureTest.Config): A = {
+  def doRunTest[F[_] : Async : UnLiftIO, A](body: TestBody[F, A], config: PureTest.Config): A = {
     val env = new EnvImpl[F]
     val singleRun = wrap(env, body(env), config)
 
@@ -19,6 +18,8 @@ private[testkit] object PureTestRunner {
       case n if n > 1 => singleRun.replicateA(n).map(_.head)
       case _ => singleRun
     }
+
+
 
     env
             .unsafeRun(fullTestIO)(env.ticker)
@@ -29,13 +30,11 @@ private[testkit] object PureTestRunner {
             )
   }
 
-  private def wrap[F[_] : Async : LiftIO : UnLiftIO, A](env: EnvImpl[F], body: F[A], config: PureTest.Config): IO[A] = {
-
-    val wrappedTestRun = Dispatcher[F].use { dispatcher =>
+  private def wrap[F[_] : Async  : UnLiftIO, A](env: EnvImpl[F], body: F[A], config: PureTest.Config): IO[A] = {
 
       @volatile var outcome: Option[Either[Throwable, A]] = None
 
-      val testBody : F[Unit] =  body
+      val bodyFiber  =  body
               .evalOn(env.testContext)
               .attempt
               .flatMap { r =>
@@ -43,8 +42,7 @@ private[testkit] object PureTestRunner {
                   outcome = Some(r)
                 }
               }
-
-      val cancelToken = dispatcher.unsafeRunCancelable(testBody)
+              .start
 
       val testThread = Thread.currentThread()
 
@@ -52,25 +50,22 @@ private[testkit] object PureTestRunner {
         val err = new IllegalStateException("Still running")
         err.setStackTrace(testThread.getStackTrace)
         outcome = Some(Left(err))
-        cancelToken()
-      }
+      } *> bodyFiber.flatMap(_.cancel)
 
-      val timeoutCancelToken = dispatcher.unsafeRunCancelable {
-        (Temporal[F].sleep(config.hotLoopTimeout) *> stopHotLoop).evalOn(config.backgroundEc)
-      }
+      val timeoutFiber =
+        (Temporal[F].sleep(config.hotLoopTimeout) *> stopHotLoop)
+                .evalOn(config.backgroundEc)
+                .start
+
 
       while (outcome.isEmpty && env.testContext.state.tasks.nonEmpty) {
         val step = env.testContext.state.tasks.iterator.map(_.runsAt).min
         env.testContext.tick(step)
       }
 
-      timeoutCancelToken()
+    UnLiftIO[F].unLiftIO(timeoutFiber.flatMap(_.cancel)) *> config.testFrameworkApi.completeWith(outcome, env.testContext.state)
 
-      LiftIO[F].liftIO(config.testFrameworkApi.completeWith(outcome, env.testContext.state))
-    }
-
-    UnLiftIO[F].unLiftIO(wrappedTestRun)
-  }
+ }
 
   private class EnvImpl[F[_] : Async] extends PureTest.Env[F] with TestInstances {
     val testContext: TestContext = TestContext()
